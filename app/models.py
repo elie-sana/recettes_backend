@@ -5,6 +5,7 @@ from sqlalchemy import (
     Column, Integer, String, Boolean,
     ForeignKey, DateTime, Text
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from .database import Base
@@ -20,9 +21,6 @@ class User(Base):
     is_active       = Column(Boolean, default=True, nullable=False)
     created_at      = Column(DateTime(timezone=True), server_default=func.now())
 
-    # Un user possède plusieurs recettes
-    # cascade="all, delete-orphan" : si on supprime un user,
-    # toutes ses recettes sont supprimées automatiquement
     recettes = relationship(
         "Recette",
         back_populates="owner",
@@ -39,17 +37,16 @@ class Recette(Base):
     id          = Column(Integer, primary_key=True, index=True)
     titre       = Column(String(255), nullable=False)
     description = Column(Text, default="")
-    ingredients = Column(Text, nullable=False)
-    etapes      = Column(Text, nullable=False)
+    ingredients = Column(JSONB, nullable=False, server_default='[]')
+    etapes      = Column(JSONB, nullable=False, server_default='[]')
     categorie   = Column(String(100), default="Autre")
-    duree       = Column(Integer, default=0)       # en minutes
+    duree       = Column(Integer, default=0)
     portions    = Column(Integer, default=1)
-    image_url   = Column(String(500), default="")
+    image_url   = Column(String(500), nullable=True, default=None)
     est_favori  = Column(Boolean, default=False, nullable=False)
     created_at  = Column(DateTime(timezone=True), server_default=func.now())
     updated_at  = Column(DateTime(timezone=True), onupdate=func.now())
 
-    # Clé étrangère : chaque recette appartient à exactement un user
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     owner    = relationship("User", back_populates="recettes")
 
