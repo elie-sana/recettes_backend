@@ -2,7 +2,8 @@
 # CRUD complet des recettes — toutes les routes sont protégées par JWT
 
 import os
-import uuid
+import cloudinary
+import cloudinary.uploader
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from sqlalchemy.orm import Session
 from typing import List, Optional
@@ -11,10 +12,13 @@ from ..database import get_db
 
 router = APIRouter(prefix="/recettes", tags=["Recettes"])
 
-# ─── Configuration upload ─────────────────────────────────────────────────────
-# UPLOAD_DIR : défini par variable d'env sur Railway, "uploads" en local
-UPLOAD_DIR = os.getenv("UPLOAD_DIR", "uploads")
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+# ─── Configuration Cloudinary ─────────────────────────────────────────────────
+cloudinary.config(
+    cloud_name = os.getenv("CLOUDINARY_CLOUD_NAME"),
+    api_key    = os.getenv("CLOUDINARY_API_KEY"),
+    api_secret = os.getenv("CLOUDINARY_API_SECRET"),
+    secure     = True,
+)
 
 EXTENSIONS_AUTORISEES = {".jpg", ".jpeg", ".png", ".webp"}
 TAILLE_MAX_OCTETS = 5 * 1024 * 1024  # 5 Mo
@@ -34,10 +38,6 @@ def get_recettes(
     db:                Session        = Depends(get_db),
     current_user:      models.User    = Depends(auth.get_current_user),
 ):
-    """
-    Retourne uniquement les recettes de l'utilisateur connecté.
-    Supporte la recherche par titre, le filtre par catégorie et par favoris.
-    """
     query = db.query(models.Recette).filter(
         models.Recette.owner_id == current_user.id
     )
@@ -157,12 +157,14 @@ def delete_recette(
             detail="Recette introuvable"
         )
 
-    # Supprime le fichier image associé s'il existe
-    if recette.image_url and "/uploads/" in recette.image_url:
-        nom_fichier = recette.image_url.split("/uploads/")[-1]
-        chemin = os.path.join(UPLOAD_DIR, nom_fichier)
-        if os.path.exists(chemin):
-            os.remove(chemin)
+    # Supprime l'image Cloudinary si elle existe
+    if recette.image_url and "cloudinary.com" in recette.image_url:
+        try:
+            partie = recette.image_url.split("/recettes/")[-1]
+            public_id = f"recettes/{partie.rsplit('.', 1)[0]}"
+            cloudinary.uploader.destroy(public_id)
+        except Exception:
+            pass
 
     db.delete(recette)
     db.commit()
@@ -180,7 +182,6 @@ def toggle_favori(
     db:           Session     = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_user),
 ):
-    """Toggle : si favori → non favori, si non favori → favori."""
     recette = db.query(models.Recette).filter(
         models.Recette.id       == recette_id,
         models.Recette.owner_id == current_user.id,
@@ -211,11 +212,6 @@ async def upload_image(
     db:           Session           = Depends(get_db),
     current_user: models.User       = Depends(auth.get_current_user),
 ):
-    """
-    Reçoit un fichier image en multipart/form-data.
-    Sauvegarde le fichier sur disque, met à jour image_url en base,
-    supprime l'ancienne image si elle existait.
-    """
     # ── Vérification propriété ───────────────────────────────────────────────
     recette = db.query(models.Recette).filter(
         models.Recette.id       == recette_id,
@@ -228,7 +224,7 @@ async def upload_image(
             detail="Recette introuvable"
         )
 
-    # ── Validation extension — whitelist stricte ─────────────────────────────
+    # ── Validation extension ─────────────────────────────────────────────────
     _, ext = os.path.splitext(fichier.filename or "")
     ext = ext.lower()
     if ext not in EXTENSIONS_AUTORISEES:
@@ -245,22 +241,32 @@ async def upload_image(
             detail="Fichier trop volumineux (max 5 Mo)"
         )
 
-    # ── Sauvegarde avec nom UUID — évite collisions et path traversal ────────
-    nom_fichier = f"{uuid.uuid4().hex}{ext}"
-    chemin = os.path.join(UPLOAD_DIR, nom_fichier)
-    with open(chemin, "wb") as f:
-        f.write(contenu)
+    # ── Supprime l'ancienne image Cloudinary ─────────────────────────────────
+    if recette.image_url and "cloudinary.com" in recette.image_url:
+        try:
+            partie = recette.image_url.split("/recettes/")[-1]
+            public_id = f"recettes/{partie.rsplit('.', 1)[0]}"
+            cloudinary.uploader.destroy(public_id)
+        except Exception:
+            pass
 
-    # ── Supprime l'ancienne image ────────────────────────────────────────────
-    if recette.image_url and "/uploads/" in recette.image_url:
-        ancien_nom = recette.image_url.split("/uploads/")[-1]
-        ancien_chemin = os.path.join(UPLOAD_DIR, ancien_nom)
-        if os.path.exists(ancien_chemin):
-            os.remove(ancien_chemin)
+    # ── Upload vers Cloudinary ───────────────────────────────────────────────
+    try:
+        resultat = cloudinary.uploader.upload(
+            contenu,
+            folder        = "recettes",
+            resource_type = "image",
+            transformation = [{"width": 1200, "crop": "limit", "quality": "auto"}],
+        )
+        image_url = resultat["secure_url"]
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erreur upload Cloudinary : {str(e)}"
+        )
 
     # ── Met à jour la base ───────────────────────────────────────────────────
-    base_url = os.getenv("BASE_URL", "http://localhost:8000")
-    recette.image_url = f"{base_url}/uploads/{nom_fichier}"
+    recette.image_url = image_url
     db.commit()
     db.refresh(recette)
     return recette
