@@ -1,7 +1,9 @@
 # app/routers/recettes.py
 # CRUD complet des recettes — toutes les routes sont protégées par JWT
 
-from fastapi import APIRouter, Depends, HTTPException, status
+import os
+import uuid
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from .. import models, schemas, auth
@@ -9,6 +11,16 @@ from ..database import get_db
 
 router = APIRouter(prefix="/recettes", tags=["Recettes"])
 
+# ─── Configuration upload ─────────────────────────────────────────────────────
+# UPLOAD_DIR : défini par variable d'env sur Railway, "uploads" en local
+UPLOAD_DIR = os.getenv("UPLOAD_DIR", "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+EXTENSIONS_AUTORISEES = {".jpg", ".jpeg", ".png", ".webp"}
+TAILLE_MAX_OCTETS = 5 * 1024 * 1024  # 5 Mo
+
+
+# ─── GET / ────────────────────────────────────────────────────────────────────
 
 @router.get(
     "/",
@@ -31,7 +43,6 @@ def get_recettes(
     )
 
     if search:
-        # ilike = case-insensitive LIKE — fonctionne sur PostgreSQL
         query = query.filter(models.Recette.titre.ilike(f"%{search}%"))
 
     if categorie:
@@ -42,6 +53,8 @@ def get_recettes(
 
     return query.order_by(models.Recette.created_at.desc()).all()
 
+
+# ─── POST / ───────────────────────────────────────────────────────────────────
 
 @router.post(
     "/",
@@ -64,6 +77,8 @@ def create_recette(
     return recette
 
 
+# ─── GET /{id} ────────────────────────────────────────────────────────────────
+
 @router.get(
     "/{recette_id}",
     response_model=schemas.RecetteResponse,
@@ -76,7 +91,7 @@ def get_recette(
 ):
     recette = db.query(models.Recette).filter(
         models.Recette.id       == recette_id,
-        models.Recette.owner_id == current_user.id,  # isolation stricte par user
+        models.Recette.owner_id == current_user.id,
     ).first()
 
     if not recette:
@@ -86,6 +101,8 @@ def get_recette(
         )
     return recette
 
+
+# ─── PUT /{id} ────────────────────────────────────────────────────────────────
 
 @router.put(
     "/{recette_id}",
@@ -109,8 +126,6 @@ def update_recette(
             detail="Recette introuvable"
         )
 
-    # exclude_unset=True : ne met à jour que les champs explicitement fournis
-    # Si le client envoie {"titre": "nouveau"}, seul le titre change
     for field, value in recette_data.model_dump(exclude_unset=True).items():
         setattr(recette, field, value)
 
@@ -118,6 +133,8 @@ def update_recette(
     db.refresh(recette)
     return recette
 
+
+# ─── DELETE /{id} ─────────────────────────────────────────────────────────────
 
 @router.delete(
     "/{recette_id}",
@@ -140,10 +157,18 @@ def delete_recette(
             detail="Recette introuvable"
         )
 
+    # Supprime le fichier image associé s'il existe
+    if recette.image_url and "/uploads/" in recette.image_url:
+        nom_fichier = recette.image_url.split("/uploads/")[-1]
+        chemin = os.path.join(UPLOAD_DIR, nom_fichier)
+        if os.path.exists(chemin):
+            os.remove(chemin)
+
     db.delete(recette)
     db.commit()
-    # 204 No Content — pas de corps dans la réponse
 
+
+# ─── PATCH /{id}/favori ───────────────────────────────────────────────────────
 
 @router.patch(
     "/{recette_id}/favori",
@@ -168,6 +193,74 @@ def toggle_favori(
         )
 
     recette.est_favori = not recette.est_favori
+    db.commit()
+    db.refresh(recette)
+    return recette
+
+
+# ─── POST /{id}/image ─────────────────────────────────────────────────────────
+
+@router.post(
+    "/{recette_id}/image",
+    response_model=schemas.RecetteResponse,
+    summary="Uploader une image pour une recette"
+)
+async def upload_image(
+    recette_id:   int,
+    fichier:      UploadFile        = File(...),
+    db:           Session           = Depends(get_db),
+    current_user: models.User       = Depends(auth.get_current_user),
+):
+    """
+    Reçoit un fichier image en multipart/form-data.
+    Sauvegarde le fichier sur disque, met à jour image_url en base,
+    supprime l'ancienne image si elle existait.
+    """
+    # ── Vérification propriété ───────────────────────────────────────────────
+    recette = db.query(models.Recette).filter(
+        models.Recette.id       == recette_id,
+        models.Recette.owner_id == current_user.id,
+    ).first()
+
+    if not recette:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Recette introuvable"
+        )
+
+    # ── Validation extension — whitelist stricte ─────────────────────────────
+    _, ext = os.path.splitext(fichier.filename or "")
+    ext = ext.lower()
+    if ext not in EXTENSIONS_AUTORISEES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Extension non autorisée. Acceptées : {', '.join(EXTENSIONS_AUTORISEES)}"
+        )
+
+    # ── Validation taille ────────────────────────────────────────────────────
+    contenu = await fichier.read()
+    if len(contenu) > TAILLE_MAX_OCTETS:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Fichier trop volumineux (max 5 Mo)"
+        )
+
+    # ── Sauvegarde avec nom UUID — évite collisions et path traversal ────────
+    nom_fichier = f"{uuid.uuid4().hex}{ext}"
+    chemin = os.path.join(UPLOAD_DIR, nom_fichier)
+    with open(chemin, "wb") as f:
+        f.write(contenu)
+
+    # ── Supprime l'ancienne image ────────────────────────────────────────────
+    if recette.image_url and "/uploads/" in recette.image_url:
+        ancien_nom = recette.image_url.split("/uploads/")[-1]
+        ancien_chemin = os.path.join(UPLOAD_DIR, ancien_nom)
+        if os.path.exists(ancien_chemin):
+            os.remove(ancien_chemin)
+
+    # ── Met à jour la base ───────────────────────────────────────────────────
+    base_url = os.getenv("BASE_URL", "http://localhost:8000")
+    recette.image_url = f"{base_url}/uploads/{nom_fichier}"
     db.commit()
     db.refresh(recette)
     return recette

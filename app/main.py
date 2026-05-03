@@ -1,11 +1,17 @@
 # app/main.py
 # Point d'entrée de l'application FastAPI
 
+import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from .database import engine, Base
 from .routers import users, recettes
+
+# Dossier de stockage des images — cohérent avec recettes.py
+UPLOAD_DIR = os.getenv("UPLOAD_DIR", "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
 @asynccontextmanager
@@ -26,6 +32,13 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# ─────────────────────────────────────────────
+#  FICHIERS STATIQUES — images uploadées
+# ─────────────────────────────────────────────
+# Accessible via GET /uploads/{nom_fichier}
+# Doit être monté AVANT les routers pour éviter les conflits de routes
+app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 # ─────────────────────────────────────────────
 #  CORS
