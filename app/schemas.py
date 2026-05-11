@@ -1,7 +1,5 @@
 # app/schemas.py
 # Schémas Pydantic : validation des données entrantes et sortantes
-# Distinct des models SQLAlchemy — les models parlent à la DB,
-# les schemas parlent au client HTTP
 
 from pydantic import BaseModel, EmailStr, field_validator
 from typing import Optional, List
@@ -64,15 +62,17 @@ class TokenResponse(BaseModel):
 # ─────────────────────────────────────────────
 
 class RecetteCreate(BaseModel):
-    titre:       str
-    description: Optional[str]       = ""
-    ingredients: List[str]           = []
-    etapes:      List[str]           = []
-    categorie:   Optional[str]       = "Autre"
-    duree:       Optional[int]       = 0
-    portions:    Optional[int]       = 1
-    image_url:   Optional[str]       = None
-    est_favori:  Optional[bool]      = False
+    titre:         str
+    description:   Optional[str]        = ""
+    ingredients:   List[str]            = []
+    etapes:        List[str]            = []
+    # Durées par étape en minutes — null = pas de minuteur pour cette étape
+    durees_etapes: List[Optional[int]]  = []
+    categorie:     Optional[str]        = "Autre"
+    duree:         Optional[int]        = 0
+    portions:      Optional[int]        = 1
+    image_url:     Optional[str]        = None
+    est_favori:    Optional[bool]       = False
 
     @field_validator("titre")
     @classmethod
@@ -87,36 +87,37 @@ class RecetteCreate(BaseModel):
     @field_validator("duree", "portions")
     @classmethod
     def valeur_positive(cls, v: int) -> int:
-        if v < 0:
+        if v is not None and v < 0:
             raise ValueError("La valeur doit être positive")
         return v
 
 
 class RecetteUpdate(BaseModel):
-    # Tous les champs sont optionnels — on met à jour seulement ce qui est fourni
-    titre:       Optional[str]       = None
-    description: Optional[str]       = None
-    ingredients: Optional[List[str]] = None  # ← List[str]
-    etapes:      Optional[List[str]] = None  # ← List[str]
-    categorie:   Optional[str]       = None
-    duree:       Optional[int]       = None
-    portions:    Optional[int]       = None
-    image_url:   Optional[str]       = None
-    est_favori:  Optional[bool]      = None
+    titre:         Optional[str]               = None
+    description:   Optional[str]               = None
+    ingredients:   Optional[List[str]]          = None
+    etapes:        Optional[List[str]]          = None
+    durees_etapes: Optional[List[Optional[int]]] = None
+    categorie:     Optional[str]               = None
+    duree:         Optional[int]               = None
+    portions:      Optional[int]               = None
+    image_url:     Optional[str]               = None
+    est_favori:    Optional[bool]              = None
 
 
 class RecetteResponse(BaseModel):
-    id:          int
-    titre:       str
-    description: str
-    ingredients: List[str]   # ← List[str]
-    etapes:      List[str]   # ← List[str]
-    categorie:   str
-    duree:       int
-    portions:    int
-    image_url:   Optional[str]
-    est_favori:  bool
-    owner_id:    int
-    created_at:  datetime
+    id:            int
+    titre:         str
+    description:   str
+    ingredients:   List[str]
+    etapes:        List[str]
+    durees_etapes: List[Optional[int]]  = []
+    categorie:     str
+    duree:         int
+    portions:      int
+    image_url:     Optional[str]
+    est_favori:    bool
+    owner_id:      int
+    created_at:    datetime
 
     model_config = {"from_attributes": True}
